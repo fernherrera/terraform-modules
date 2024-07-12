@@ -1,0 +1,55 @@
+name: "Terraform Deployment"
+
+variables:
+  configuration: 'docker-sonarqube'
+
+trigger:
+  branches:
+    include:
+    - 'main'
+  paths:
+    include:
+    - 'configs/docker-sonarqube/*'
+
+pr:
+  branches:
+    include:
+    - main
+
+stages:
+
+- template: templates/stages/terraform-validate.yml
+  parameters: 
+    workingDirectory: '$(Build.SourcesDirectory)/src'
+
+- template: templates/stages/terraform-runner-deploy.yml
+  parameters:
+    stageName: 'DeployDev'
+    configuration: ${{ variables.configuration }}
+    environment: 'dev'
+    azdoEnvironment: 'az_lz_dev'
+    backendServiceArm: 'imx-dev-sub'
+    backendAzureRmSubscriptionId: $(TF_BACKEND_SUBSCRIPTION_ID)
+    backendAzureRmResourceGroupName: $(TF_BACKEND_RESOURCE_GROUP)
+    backendAzureRmStorageAccountName: $(TF_BACKEND_STORAGE_ACCOUNT)
+    backendAzureRmStorageAccessKey: $(TF_BACKEND_STORAGE_ACCESS_KEY)
+    backendAzureRmContainerName: $(TF_BACKEND_CONTAINER)
+    backendAzureRmKey: $(TF_STATE_PREFIX)
+    dependsOn: 
+    - Validate
+
+- template: templates/stages/terraform-runner-deploy.yml
+  parameters:
+    stageName: 'DeployPrd'
+    configuration: ${{ variables.configuration }}
+    environment: 'prd-ent'
+    azdoEnvironment: 'az_lz_prd-ent'
+    backendServiceArm: 'imx-prd-ent-sub'
+    backendAzureRmSubscriptionId: $(TF_BACKEND_SUBSCRIPTION_ID)
+    backendAzureRmResourceGroupName: $(TF_BACKEND_RESOURCE_GROUP)
+    backendAzureRmStorageAccountName: $(TF_BACKEND_STORAGE_ACCOUNT)
+    backendAzureRmStorageAccessKey: $(TF_BACKEND_STORAGE_ACCESS_KEY)
+    backendAzureRmContainerName: $(TF_BACKEND_CONTAINER)
+    backendAzureRmKey: $(TF_STATE_PREFIX)
+    dependsOn: 
+    - Validate

@@ -1,0 +1,40 @@
+parameters:
+- name: workingDirectory
+  type: string
+  default: '$(Build.SourcesDirectory)'
+- name: dependsOn
+  type: object
+  default: []
+
+stages:
+
+- stage: Validate
+  displayName: "Terraform Validate"
+  dependsOn: ${{ parameters.dependsOn  }}
+
+  jobs:
+  - job: Terraform_Validate
+    displayName: "Terraform Validate"
+
+    pool:
+      vmImage: 'ubuntu-latest'
+    
+    steps:
+      - checkout: self
+
+      - task: TerraformInstaller@0
+        displayName: Install Terraform
+        inputs: 
+          terraformVersion: 'latest'
+      
+      - bash: terraform fmt -check -recursive -diff
+        displayName: Terraform Format Check
+        workingDirectory: ${{ parameters.workingDirectory }}
+
+      - bash: terraform init -backend=false
+        displayName: Terraform Init
+        workingDirectory: ${{ parameters.workingDirectory }}
+
+      - bash: terraform validate
+        displayName: Terraform Validate
+        workingDirectory: ${{ parameters.workingDirectory }}

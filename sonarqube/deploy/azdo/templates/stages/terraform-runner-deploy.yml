@@ -1,0 +1,162 @@
+parameters:
+- name: stageName
+  type: string
+  default: ''
+- name: configuration
+  type: string
+  default: ''
+- name: environment
+  type: string
+  default: dev
+- name: azdoEnvironment
+  type: string
+  default: ''
+- name: backendServiceArm
+  type: string
+  default: ''
+- name: backendAzureRmSubscriptionId
+  type: string
+  default: ''
+- name: backendAzureRmResourceGroupName
+  type: string
+  default: 'resourcegroup-tfstate'
+- name: backendAzureRmStorageAccountName
+  type: string
+  default: 'terraformtfstate'
+- name: backendAzureRmStorageAccessKey
+  type: string
+  default: ''
+- name: backendAzureRmContainerName
+  type: string
+  default: 'tfstate'
+- name: backendAzureRmKey
+  type: string
+  default: 'dev.tfstate'
+- name: anyTfChanges
+  type: boolean
+  default: false
+- name: dependsOn
+  type: object
+  default: []
+- name: image
+  type: string
+  default: 'ubuntu-latest'
+  values:
+  - macOS-latest
+  - ubuntu-latest
+  - windows-latest
+
+stages:
+- ${{ if ne(variables['Build.Reason'], 'PullRequest') }}:
+  - stage: ${{ parameters.stageName }}
+    displayName: "Deploy to ${{ parameters.environment }}"
+    dependsOn: ${{ parameters.dependsOn }}
+
+    jobs:
+    - deployment: tf_deploy
+      displayName: "Terraform Deployment to ${{ parameters.environment }}"
+      environment: ${{ parameters.azdoEnvironment }}
+      pool:
+        vmImage: ${{ parameters.image }}
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - checkout: self
+
+            # Install Terraform
+            - task: TerraformInstaller@0
+              displayName: Install Terraform
+              inputs: 
+                terraformVersion: 'latest'
+
+            # Load AzureRM service connection credentials into environment
+            - task: AzureCLI@2
+              displayName: Fetch service connection credentials
+              inputs:
+                azureSubscription: ${{ parameters.backendServiceArm }}
+                scriptType: bash
+                addSpnToEnvironment: true
+                useGlobalConfig: true
+                scriptLocation: inlineScript
+                inlineScript: | 
+                  echo "##vso[task.setvariable variable=ARM_TENANT_ID;]$tenantId"
+                  echo "##vso[task.setvariable variable=ARM_CLIENT_ID;]$servicePrincipalId"
+                  echo "##vso[task.setvariable variable=ARM_CLIENT_SECRET;]$servicePrincipalKey"
+                  echo "##vso[task.setvariable variable=ARM_SUBSCRIPTION_ID;]$(az account show | jq -r .id)"
+
+            # Add agent's IP address to firewall rules
+            - template: ../steps/agent-ip-add-storage-account.yml
+              parameters:
+                armSubscriptionId: ${{ parameters.backendAzureRmSubscriptionId }}
+                storageAccountName: ${{ parameters.backendAzureRmStorageAccountName }}
+                storageAccountResourceGroup: ${{ parameters.backendAzureRmResourceGroupName }}
+
+            # Create terraform plan
+            - task: Bash@3
+              displayName: Build Terraform Plan
+              inputs:
+                filePath: '$(Build.SourcesDirectory)/scripts/tf_runner.sh'
+                arguments: 'build -c ${{ parameters.configuration }} -e ${{ parameters.environment }}'
+              env:
+                TF_BACKEND_TENANT_ID: $(ARM_TENANT_ID)
+                TF_BACKEND_SUBSCRIPTION_ID: ${{ parameters.backendAzureRmSubscriptionId }}
+                TF_BACKEND_CLIENT_ID: $(ARM_CLIENT_ID)
+                TF_BACKEND_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+                TF_BACKEND_RESOURCE_GROUP: ${{ parameters.backendAzureRmResourceGroupName }}
+                TF_BACKEND_STORAGE_ACCOUNT: ${{ parameters.backendAzureRmStorageAccountName }}
+                TF_BACKEND_CONTAINER: ${{ parameters.backendAzureRmContainerName }}
+                TF_BACKEND_STORAGE_ACCESS_KEY: ${{ parameters.backendAzureRmStorageAccessKey }}
+                TF_STATE_PREFIX: ${{ parameters.backendAzureRmKey }}
+
+            # Publish terraform plan as artifact
+            - task: PublishPipelineArtifact@1
+              displayName: "Publish Terraform Plan Artifact"
+              condition: ne(variables['Build.Reason'], 'PullRequest')
+              inputs:
+                targetPath: '$(Build.SourcesDirectory)/plans'
+                artifact: 'tfplans-${{ parameters.environment }}'
+                publishLocation: 'pipeline'
+
+            # Check if there are changes in plan
+            - task: Bash@3
+              displayName: Detect Terraform Plan Changes
+              inputs:
+                targetType: 'inline'
+                workingDirectory: '$(Build.SourcesDirectory)/src'
+                script: | 
+                  actions=$(terraform show -json '$(Build.SourcesDirectory)/plans/${{ parameters.configuration }}-${{ parameters.environment }}.tfplan' | jq '[.resource_changes[].change.actions] | flatten | unique | join(",")')
+                  case "$actions" in
+                    *create* | *delete* | *update*)
+                      echo "Terraform will perform the following actions : $actions"
+                      echo "##vso[task.setvariable variable=anyTfChanges;]true"
+                      ;;
+                    *)
+                      echo "There are no changes detected in Terraform tfplan file."
+                      ;;
+                  esac
+
+            # Apply terraform plan (if there are changes)
+            - task: Bash@3
+              displayName: Apply Terraform Plan
+              condition: and(ne(variables['Build.Reason'], 'PullRequest'), eq(variables.anyTfChanges, true))
+              inputs:
+                filePath: '$(Build.SourcesDirectory)/scripts/tf_runner.sh'
+                arguments: 'deploy -c ${{ parameters.configuration }} -e ${{ parameters.environment }}'
+              env:
+                TF_BACKEND_TENANT_ID: $(ARM_TENANT_ID)
+                TF_BACKEND_SUBSCRIPTION_ID: ${{ parameters.backendAzureRmSubscriptionId }}
+                TF_BACKEND_CLIENT_ID: $(ARM_CLIENT_ID)
+                TF_BACKEND_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+                TF_BACKEND_RESOURCE_GROUP: ${{ parameters.backendAzureRmResourceGroupName }}
+                TF_BACKEND_STORAGE_ACCOUNT: ${{ parameters.backendAzureRmStorageAccountName }}
+                TF_BACKEND_CONTAINER: ${{ parameters.backendAzureRmContainerName }}
+                TF_BACKEND_STORAGE_ACCESS_KEY: ${{ parameters.backendAzureRmStorageAccessKey }}
+                TF_STATE_PREFIX: ${{ parameters.backendAzureRmKey }}
+
+            # Remove agent's IP address from firewall rules
+            - template: ../steps/agent-ip-remove-storage-account.yml
+              parameters:
+                armSubscriptionId: ${{ parameters.backendAzureRmSubscriptionId }}
+                storageAccountName: ${{ parameters.backendAzureRmStorageAccountName }}
+                storageAccountResourceGroup: ${{ parameters.backendAzureRmResourceGroupName }}

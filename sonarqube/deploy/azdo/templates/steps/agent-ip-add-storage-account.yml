@@ -1,0 +1,49 @@
+parameters:
+- name: armTenantId
+  type: string
+  default: $(ARM_TENANT_ID)
+- name: armSubscriptionId
+  type: string
+  default: $(ARM_SUBSCRIPTION_ID)
+- name: armClientId
+  type: string
+  default: $(ARM_CLIENT_ID)
+- name: armClientSecret
+  type: string
+  default: $(ARM_CLIENT_SECRET)
+- name: storageAccountName
+  type: string
+  default: ''
+- name: storageAccountResourceGroup
+  type: string
+  default: ''
+
+steps:
+- task: Bash@3
+  displayName: 'Add Agent IP (Storage Account)'
+  env:
+    agent_ip: $(agent_ip)  # Expose the agent IP address as an environment variable
+  inputs:
+    targetType: 'inline'
+    script: |
+      agent_ip=$(curl -s http://ipinfo.io/ip) # Get agent IP
+      echo "##vso[task.setvariable variable=agent_ip;]$agent_ip"  # Set the agent's IP address as var
+      
+      # Authenticate with Azure using existing environment variables
+      az login \
+        --service-principal -u ${{ parameters.armClientId }} -p ${{ parameters.armClientSecret }} \
+        --tenant ${{ parameters.armTenantId }} \
+        --output none
+
+      # Set the susbscription
+      az account set --subscription ${{ parameters.armSubscriptionId }}
+
+      # Add the agent's IP address to the Storage Account firewall rule
+      az storage account network-rule add \
+        --resource-group ${{ parameters.storageAccountResourceGroup }} \
+        --account-name ${{ parameters.storageAccountName }} \
+        --ip-address "$agent_ip" \
+        --output none
+
+      # Output the agent's IP address
+      echo "Added agent IP: $agent_ip to the firewall rule"
